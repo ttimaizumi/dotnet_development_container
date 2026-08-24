@@ -1,6 +1,6 @@
-FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine
+FROM alpine:latest
 
-RUN apk add --no-cache openssh openssl sudo shadow vim python3 py3-pip bash
+RUN apk add --no-cache openssh openssl sudo shadow vim python3 py3-pip dotnet10-sdk
 
 RUN python3 -m venv /root/python
 
@@ -21,7 +21,7 @@ RUN sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config &
 
 RUN echo "source /root/python/bin/activate" >> /root/.profile
 ENV PATH="/root/python/bin:$PATH"
-RUN pip install locust
+#RUN pip install locust
 
 EXPOSE 22
 CMD ["/usr/sbin/sshd", "-D"]
