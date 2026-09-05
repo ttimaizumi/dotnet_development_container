@@ -1,0 +1,67 @@
+version: '3.8'
+# podman-compose --podman-build-args SSH_PUBKEY="$(cat ~/.ssh/id_ed25519.pub)" up -d
+# podman-compose start
+# podman-compose down
+
+services:
+  # Update this to the name of the service you want to work with in your docker-compose.yml file
+  development:
+    build:
+      context: .
+      dockerfile: Containerfile
+    image: dev_image_net:latest
+    container_name: dev_container_net
+
+    environment:
+      - DISPLAY=${DISPLAY}
+      - WAYLAND_DISPLAY=${WAYLAND_DISPLAY}
+      - XDG_RUNTIME_DIR=/tmp/runtime
+      - PULSE_SERVER=unix:/tmp/runtime/pulse/native
+      - GDK_SCALE=1
+      - GDK_DPI_SCALE=1
+      - XAUTHORITY=/tmp/xauth
+      - QT_X11_NO_MITSHM=1
+
+    volumes:
+      - ~/workspace:/workspace
+      - ./gui-environment.sh:/etc/profile.d/gui-environment.sh:ro
+      - /tmp/.X11-unix:/tmp/.X11-unix:ro
+      - ${XAUTHORITY}:/tmp/xauth:ro
+      - ${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}:/tmp/runtime/${WAYLAND_DISPLAY}:ro
+      - ${XDG_RUNTIME_DIR}/pulse/native:/tmp/runtime/pulse/native:ro
+
+    devices:
+      - /dev/dri:/dev/dri
+
+    # Retain access to host video/audio device groups with rootless Podman.
+    group_add:
+      - keep-groups
+
+    # Host display sockets cannot safely be relabeled on SELinux systems.
+    security_opt:
+      - label=disable
+      # Uncomment when using a ptrace-based debugger.
+      # - seccomp=unconfined
+
+    # Avoid the small default /dev/shm used by Chromium and Electron apps.
+    shm_size: 1gb
+
+    ports:
+      - "8081:8080"
+      - "5000:5000"
+      - "8089:8089"
+      - "2222:22"
+
+    networks:
+      - development
+
+    # Overrides the default command so the container remains available over SSH.
+    command: /usr/sbin/sshd -D
+
+    # Uncomment when using a ptrace-based debugger like C++, Go, or Rust.
+    # cap_add:
+    #   - SYS_PTRACE
+
+networks:
+  development:
+    driver: bridge
