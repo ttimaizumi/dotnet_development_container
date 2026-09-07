@@ -2,9 +2,13 @@ FROM fedora:44
 
 RUN dnf install -y \
         openssh-server openssl sudo shadow-utils vim python3 python3-pip \
-        dotnet-sdk-10.0 aspnetcore-runtime-10.0 aspnetcore-targeting-pack-10.0 && \
+        dotnet-sdk-10.0 aspnetcore-runtime-10.0 aspnetcore-targeting-pack-10.0 fish \
+        alsa-lib fontconfig freetype gtk3 libX11 libX11-xcb libXcursor libXext \
+        libXfixes libXi libXinerama libXrandr libXrender libXtst libxcb \
+        mesa-libEGL mesa-libGL nss && \
     dnf clean all
 
+RUN chsh -s /bin/fish root
 RUN ssh-keygen -A && mkdir -p /run/sshd
 
 ARG SSH_PUBKEY
