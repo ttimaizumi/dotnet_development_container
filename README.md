@@ -20,7 +20,7 @@ Pass the SSH public key as a build argument. The nested quoting is required
 because an SSH public key contains spaces.
 
 ```bash
-podman-compose --podman-build-args "--build-arg 'SSH_PUBKEY=$(cat ~/.ssh/id_ed25519.pub)'" -f ~/cloud_computing/dev_container/podman-compose.yml   build
+podman-compose --podman-build-args "--build-arg 'SSH_PUBKEY=$(cat ~/.ssh/id_ed25519.pub)'" -f ~/cloud_computing/dotnet_development_container/podman-compose.yml   build
 ```
 
 ## Create And Start
@@ -29,7 +29,7 @@ Create and start the container after building the image:
 
 ```bash
 podman-compose \
-  -f ~/cloud_computing/dev_container/podman-compose.yml \
+  -f ~/cloud_computing/dotnet_development_container/podman-compose.yml \
   up -d
 ```
 
@@ -73,22 +73,14 @@ Stop the container without removing it:
 
 ```bash
 podman-compose \
-  -f ~/cloud_computing/dev_container/podman-compose.yml \
+  -f ~/cloud_computing/dotnet_development_container/podman-compose.yml \
   stop
-```
-
-Start the existing container again:
-
-```bash
-podman-compose \
-  -f ~/cloud_computing/dev_container/podman-compose.yml \
-  start
 ```
 
 Stop and remove the container and network:
 
 ```bash
 podman-compose \
-  -f ~/cloud_computing/dev_container/podman-compose.yml \
+  -f ~/cloud_computing/dotnet_development_container/podman-compose.yml \
   down
 ```
