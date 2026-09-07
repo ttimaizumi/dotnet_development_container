@@ -52,7 +52,8 @@ podman exec -d dev_container_net /workspace/rider/bin/rider
 To run Rider in the foreground and see startup errors, omit `-d`:
 
 ```bash
-podman exec dev_container_net /workspace/rider/bin/rider
+podman exec -d  dev_container_net /root/rider/bin/rider
+
 ```
 
 ## SSH Access
