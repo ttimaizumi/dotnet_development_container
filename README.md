@@ -20,10 +20,7 @@ Pass the SSH public key as a build argument. The nested quoting is required
 because an SSH public key contains spaces.
 
 ```bash
-podman-compose \
-  --podman-build-args "--build-arg 'SSH_PUBKEY=$(cat ~/.ssh/id_ed25519.pub)'" \
-  -f ~/cloud_computing/dev_container/podman-compose.yml \
-  build
+podman-compose --podman-build-args "--build-arg 'SSH_PUBKEY=$(cat ~/.ssh/id_ed25519.pub)'" -f ~/cloud_computing/dev_container/podman-compose.yml   build
 ```
 
 ## Create And Start
