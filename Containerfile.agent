@@ -1,0 +1,14 @@
+FROM docker.io/jenkins/inbound-agent:latest-jdk21
+
+USER root
+
+RUN apt-get update && \
+ apt-get install -y \
+        podman \
+        buildah \
+        curl \
+        git \
+        jq && \ 
+    rm -rf /var/lib/apt/lists/*
+
+USER jenkins
