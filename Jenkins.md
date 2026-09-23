@@ -1,5 +1,13 @@
 
+Enable podman service
+systemctl --user enable podman.service
+Create jenkins network
+podman network create jenkins
 
+podman pull jenkins/jenkins:alpine
+podman run --name jenkins -p 8080:8080 -p 50000:50000 --restart=unless-stopped  jenkins/jenkins:alpine
+Admin password:
+podman exec myjenkins  cat /var/jenkins_home/secrets/initialAdminPassword
 
 Run agent, opt
 podman run -d  --name jenkins-agent  --network jenkins --replace \
