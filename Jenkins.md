@@ -15,6 +15,10 @@ Admin password:
 ```bash
 podman exec jenkins  cat /var/jenkins_home/secrets/initialAdminPassword
 ```
+Build agent image
+```bash
+podman build . -f Containerfile.agen -t jenkins_agent_img
+```
 
 Run agent, opt
 ```bash
