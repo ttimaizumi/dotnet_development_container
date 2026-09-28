@@ -9,39 +9,221 @@ easily.
 Prepare these before starting the Jenkinsfile exercises:
 
 - The Jenkins controller container is running.
-- The Jenkins agent container is connected with the label `podman-kind`.
-- The agent contains .NET 10, Git, the Podman client, `kubectl`, and `curl`.
+- The Jenkins build agent container is connected with the label `build-agent`.
+- The build agent contains .NET 10, Git, and the Podman client.
+- A separate Jenkins deployment agent container is connected with the label `deploy-agent`.
+- The deployment agent contains Git, `kubectl`, and `curl`.
 - The local registry is available at `localhost:5000`.
 - The three kind clusters exist: `kind-dev`, `kind-qa`, and `kind-prd`.
 - Kubernetes manifests and Kustomize overlays exist.
 - Jenkins can read the GitHub repository.
-- The Jenkins agent has read-only access to the kubeconfig and access to the rootless Podman
-  socket.
+- The deployment agent has read-only access to the kubeconfig file and network access to the
+  Kubernetes API servers. The credentials in that file must permit the required deployments.
+- The build agent has access to the rootless Podman socket.
+
+### Start the build agent
+
+Build the image from the repository root:
+
+```bash
+podman build \
+  --file Containerfile \
+  --tag jenkins_agent_img:latest \
+  .
+```
+
+The image extends the Jenkins inbound agent and includes the .NET 10 SDK, Git, and the Podman
+client. The Podman client uses the host's rootless Podman API socket; it does not run a separate
+container engine inside the agent.
+
+Before running the pipeline, configure a permanent Jenkins node with:
+
+- Node name: `podman-agent`
+- Label: `build-agent`
+- Remote root directory: `/home/jenkins/agent`
+- Launch method: inbound agent
+
+Copy the node's secret from Jenkins, make sure the `jenkins` Podman network and
+`jenkins_agent_img:latest` image already exist, and start the agent as the host user that owns
+the rootless Podman socket:
+
+Optionally enable and start the rootless Podman API socket if it is not already running:
+
+```bash
+systemctl --user enable --now podman.socket
+```
+
+On a system without user-level systemd services, start the API service manually in a separate
+terminal instead:
+
+```bash
+podman system service --time=0 unix:///run/user/$(id -u)/podman/podman.sock
+```
+
+Then start the Jenkins build agent:
+
+```bash
+podman run -d \
+  --name jenkins-agent \
+  --network jenkins \
+  --replace \
+  --restart=unless-stopped \
+  --security-opt label=disable \
+  --userns=keep-id \
+  -v /run/user/1000/podman/podman.sock:/run/podman/podman.sock \
+  -e CONTAINER_HOST=unix:///run/podman/podman.sock \
+  jenkins_agent_img:latest \
+  -url http://jenkins:8080 \
+  -secret 'FROM_JENKINS_SERVER' \
+  -name podman-agent \
+  -webSocket \
+  -workDir /home/jenkins/agent
+```
+
+Replace `FROM_JENKINS_SERVER` with the inbound-agent secret shown by Jenkins. The socket path
+assumes the rootless Podman owner has UID `1000`; adjust the bind-mount source if the host UID
+differs.
+
+In Jenkins, wait for `podman-agent` to report as online and confirm that it retains the
+`build-agent` label. The pipeline selects the label, not the node name.
+
+### Start the deployment agent
+
+Build the deployment image from the repository root:
+
+```bash
+podman build \
+  --file Containerfile.deploy-agent \
+  --tag jenkins_deploy_agent_img:latest \
+  .
+```
+
+The image extends the Jenkins inbound agent and includes Git, `curl`, and `kubectl` v1.36.3
+with its built-in Kustomize support. It intentionally does not include Podman or `kind`.
+
+Configure another permanent Jenkins node with:
+
+- Node name: `deploy-agent`
+- Label: `deploy-agent`
+- Remote root directory: `/home/jenkins/agent`
+- Launch method: inbound agent
+
+Copy this node's secret from Jenkins and start the agent with a read-only kubeconfig:
+
+```bash
+podman run -d \
+  --name jenkins-deploy-agent \
+  --network jenkins \
+  --replace \
+  --restart=unless-stopped \
+  --security-opt label=disable \
+  --userns=keep-id \
+  -v "$HOME/.kube/config:/home/jenkins/kubeconfig:ro" \
+  -e KUBECONFIG=/home/jenkins/kubeconfig \
+  jenkins_deploy_agent_img:latest \
+  -url http://jenkins:8080 \
+  -secret 'FROM_JENKINS_SERVER' \
+  -name deploy-agent \
+  -webSocket \
+  -workDir /home/jenkins/agent
+```
+
+Replace `FROM_JENKINS_SERVER` with the secret for the deployment node. The kubeconfig must use
+Kubernetes API server addresses that are reachable from the `jenkins` Podman network; a server
+address such as `127.0.0.1` refers to the deployment-agent container itself and will not reach a
+host-published API server. Keep the mount read-only and grant its credentials only the permissions
+required by the deployment scripts.
+
+In Jenkins, wait for `deploy-agent` to report as online and confirm that it retains the
+`deploy-agent` label.
+
+### Start the local registry
+
+Run a local OCI registry before starting the pipeline. The named volume preserves images when
+the registry container is replaced or restarted:
+
+```bash
+podman run -d \
+  --name registry \
+  --network jenkins \
+  --replace \
+  --restart=unless-stopped \
+  -p 5000:5000 \
+  -v registry-data:/var/lib/registry \
+  docker.io/library/registry:3
+```
+
+Verify that the Registry API is available from the host:
+
+```bash
+curl http://localhost:5000/v2/
+```
+
+A successful request returns `{}`. This registry uses HTTP rather than TLS, so pipeline pushes
+must use `podman push --tls-verify=false`. Do not expose this development registry outside the
+local environment.
 
 Keep infrastructure creation outside the application pipeline. The pipeline should consume
 existing Jenkins, registry, and kind infrastructure.
+
+The build agent does not need `kubectl` or the `kind` CLI. The deployment agent does not need
+Podman or the `kind` CLI: it uses `kubectl` to modify clusters that already exist and references
+images already published to the registry.
+
+### Configure SCM
+
+Use a Multibranch Pipeline so Jenkins supplies the correct SCM revision to `checkout scm` and can
+later distinguish `main`, feature branches, and pull requests. After creating and pushing the
+initial `Jenkinsfile` from Activity 1:
+
+1. From the Jenkins dashboard, select **New Item**.
+2. Enter a job name, select **Multibranch Pipeline**, and create the job.
+3. Under **Branch Sources**, add a Git or GitHub source.
+4. Set **Repository URL** to the GitHub repository containing this project.
+5. Select Jenkins credentials if the repository is private. No credentials are required for a
+   public repository.
+6. Under **Build Configuration**, select **by Jenkinsfile** and set **Script Path** to
+   `Jenkinsfile`.
+7. Save the job and run **Scan Multibranch Pipeline Now**.
+8. Confirm that Jenkins discovers the expected branch and creates a branch job for it.
+
+The repository URL is job configuration rather than pipeline code. In Activity 2, `checkout scm`
+uses the repository, credentials, branch, and exact revision supplied by the Multibranch Pipeline
+job. Do not replace it with a hard-coded `git` command.
 
 ---
 
 ## Activity 1: First Pipeline
 
-**Goal:** Understand Jenkins declarative pipeline structure and confirm the agent works.
+**Goal:** Understand Jenkins declarative pipeline structure and confirm both agents work.
 
 Create the initial `Jenkinsfile`:
 
 ```groovy
 pipeline {
     agent {
-        label 'podman-kind'
+        label 'build-agent'
     }
 
     stages {
-        stage('Environment') {
+        stage('Build Environment') {
             steps {
                 sh '''
                     dotnet --info
-                    kubectl version --client
                     podman version
+                '''
+            }
+        }
+
+        stage('Deployment Environment') {
+            agent {
+                label 'deploy-agent'
+            }
+            steps {
+                sh '''
+                    git --version
+                    kubectl version --client
+                    curl --version
                 '''
             }
         }
@@ -54,20 +236,22 @@ pipeline {
 1. Add the `Jenkinsfile`.
 2. Commit and push it.
 3. Trigger the Jenkins job.
-4. Locate the stage logs and workspace.
-5. Deliberately change the agent label and observe the queued build.
-6. Restore the correct label.
+4. Confirm that each stage runs in the expected container.
+5. Locate the stage logs and the separate agent workspaces.
+6. Deliberately change one agent label and observe the queued build.
+7. Restore the correct label.
 
 ### Success Criteria
 
-- Jenkins assigns the build to the containerized agent.
-- All three command-line tools are available.
+- Jenkins assigns build work to `build-agent` and deployment work to `deploy-agent`.
+- Each agent has the command-line tools required for its responsibility.
 - The pipeline appears in Stage View.
 
 ### Concepts
 
 - Pipeline as code
 - Controller versus agent
+- Stage-level agent selection
 - Jenkins workspace
 - Declarative pipeline syntax
 
@@ -82,22 +266,27 @@ Add global options and environment information:
 ```groovy
 pipeline {
     agent {
-        label 'podman-kind'
-    }
-
-    options {
-        timestamps()
-        disableConcurrentBuilds()
+        label 'build-agent'
     }
 
     environment {
         CONFIGURATION = 'Release'
+        REPOSITORY_URL = 'https://github.com/OWNER/REPOSITORY.git'
+        REPOSITORY_BRANCH = 'main'
     }
 
     stages {
         stage('Checkout') {
             steps {
-                checkout scm
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: "*/${env.REPOSITORY_BRANCH}"]],
+                    extensions: [],
+                    userRemoteConfigs: [[
+                        credentialsId: 'github-credentials',
+                        url: env.REPOSITORY_URL
+                    ]]
+                ])
                 sh 'git log -1 --oneline'
             }
         }
@@ -114,12 +303,18 @@ pipeline {
 }
 ```
 
+Replace `OWNER/REPOSITORY` with the GitHub repository path. Create a Jenkins username/password
+credential named `github-credentials` for a private repository. For a public repository, remove
+the `credentialsId` line. `skipDefaultCheckout(true)` ensures Jenkins does not perform a second,
+implicit checkout when the job itself is loaded from SCM.
+
 ### Student Tasks
 
-1. Add checkout and build stages.
-2. Introduce a compilation error.
-3. Observe that later stages do not execute.
-4. Correct the error and rerun the pipeline.
+1. Set the repository URL, branch, and credentials ID.
+2. Add checkout and build stages.
+3. Introduce a compilation error.
+4. Observe that later stages do not execute.
+5. Correct the error and rerun the pipeline.
 
 ### Success Criteria
 
@@ -327,7 +522,11 @@ Then add the development deployment:
 
 ```groovy
 stage('Deploy Dev') {
+    agent {
+        label 'deploy-agent'
+    }
     steps {
+        checkout scm
         sh '''
             ./scripts/deploy.sh \
                 kind-dev \
@@ -337,6 +536,10 @@ stage('Deploy Dev') {
     }
 }
 ```
+
+The explicit checkout is required because `deploy-agent` has a separate workspace from the
+build agent. It provides the deployment script and Kubernetes manifests at the same Git revision
+that produced the image.
 
 The script should:
 
@@ -383,7 +586,11 @@ Add a smoke-test stage:
 
 ```groovy
 stage('Test Dev') {
+    agent {
+        label 'deploy-agent'
+    }
     steps {
+        checkout scm
         sh '''
             ./scripts/smoke-test.sh http://localhost:8081
         '''
@@ -427,7 +634,11 @@ Add QA deployment and testing:
 
 ```groovy
 stage('Deploy QA') {
+    agent {
+        label 'deploy-agent'
+    }
     steps {
+        checkout scm
         sh '''
             ./scripts/deploy.sh \
                 kind-qa \
@@ -438,7 +649,11 @@ stage('Deploy QA') {
 }
 
 stage('Test QA') {
+    agent {
+        label 'deploy-agent'
+    }
     steps {
+        checkout scm
         sh '''
             ./scripts/smoke-test.sh http://localhost:8082
         '''
@@ -507,7 +722,11 @@ Then add production deployment:
 
 ```groovy
 stage('Deploy Production') {
+    agent {
+        label 'deploy-agent'
+    }
     steps {
+        checkout scm
         sh '''
             ./scripts/deploy.sh \
                 kind-prd \
@@ -518,7 +737,11 @@ stage('Deploy Production') {
 }
 
 stage('Verify Production') {
+    agent {
+        label 'deploy-agent'
+    }
     steps {
+        checkout scm
         sh '''
             ./scripts/smoke-test.sh \
                 http://localhost:8083 \
@@ -566,7 +789,11 @@ stage('Deploy Dev') {
     when {
         branch 'main'
     }
+    agent {
+        label 'deploy-agent'
+    }
     steps {
+        checkout scm
         sh './scripts/deploy.sh kind-dev dev "$IMAGE"'
     }
 }
@@ -704,7 +931,7 @@ By the final activity, the pipeline should have this structure:
 ```groovy
 pipeline {
     agent {
-        label 'podman-kind'
+        label 'build-agent'
     }
 
     options {
@@ -744,19 +971,31 @@ pipeline {
         }
 
         stage('Deploy Dev') {
-            // Automatic deployment
+            agent {
+                label 'deploy-agent'
+            }
+            // Checkout and deploy automatically
         }
 
         stage('Test Dev') {
-            // Integration tests
+            agent {
+                label 'deploy-agent'
+            }
+            // Checkout and run integration tests
         }
 
         stage('Deploy QA') {
-            // Promote the same image
+            agent {
+                label 'deploy-agent'
+            }
+            // Checkout and promote the same image
         }
 
         stage('Test QA') {
-            // Acceptance tests
+            agent {
+                label 'deploy-agent'
+            }
+            // Checkout and run acceptance tests
         }
 
         stage('Approve Production') {
@@ -764,11 +1003,17 @@ pipeline {
         }
 
         stage('Deploy Production') {
-            // Promote the same image
+            agent {
+                label 'deploy-agent'
+            }
+            // Checkout and promote the same image
         }
 
         stage('Verify Production') {
-            // Read-only smoke test
+            agent {
+                label 'deploy-agent'
+            }
+            // Checkout and run the read-only smoke test
         }
     }
 
@@ -777,6 +1022,11 @@ pipeline {
     }
 }
 ```
+
+The top-level `build-agent` remains the default for checkout, compilation, testing,
+packaging, and registry publication. Each deployment or environment test stage overrides that
+default with `deploy-agent`. Because the two containers do not share a Jenkins workspace, every
+stage on `deploy-agent` checks out the pipeline's SCM revision before invoking repository scripts.
 
 ## Suggested Class Schedule
 
