@@ -1,0 +1,18 @@
+FROM registry.k8s.io/kubectl:v1.36.3 AS kubectl
+
+FROM docker.io/jenkins/inbound-agent:latest-trixie-jdk21
+
+USER root
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=kubectl /bin/kubectl /usr/local/bin/kubectl
+
+USER jenkins
+
+WORKDIR /home/jenkins/agent

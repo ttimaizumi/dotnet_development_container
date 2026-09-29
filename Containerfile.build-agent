@@ -1,0 +1,29 @@
+FROM mcr.microsoft.com/dotnet/sdk:10.0-noble AS dotnet
+
+FROM docker.io/jenkins/inbound-agent:latest-trixie-jdk21
+
+USER root
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        ca-certificates \
+        git \
+        libgcc-s1 \
+        libgssapi-krb5-2 \
+        libicu76 \
+        libssl3t64 \
+        libstdc++6 \
+        podman \
+        zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=dotnet /usr/share/dotnet /usr/share/dotnet
+
+ENV DOTNET_ROOT=/usr/share/dotnet \
+    DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+    DOTNET_NOLOGO=1 \
+    PATH="/usr/share/dotnet:${PATH}"
+
+USER jenkins
+
+WORKDIR /home/jenkins/agent
