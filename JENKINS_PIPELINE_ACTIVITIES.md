@@ -59,32 +59,33 @@ terminal instead:
 ```bash
 podman system service --time=0 unix:///run/user/$(id -u)/podman/podman.sock
 ```
+Compile the build agent image:
+
+```bash
+podman build . -f Container.build-agent -t build_agent_img
+```
 
 Then start the Jenkins build agent:
 
 ```bash
 podman run -d \
-  --name jenkins-agent \
+  --name build-agent \
   --network jenkins \
   --replace \
   --restart=unless-stopped \
   --security-opt label=disable \
   --userns=keep-id \
-  -v /run/user/1000/podman/podman.sock:/run/podman/podman.sock \
-  -e CONTAINER_HOST=unix:///run/podman/podman.sock \
-  jenkins_agent_img:latest \
+  build_agent_img:latest \
   -url http://jenkins:8080 \
   -secret 'FROM_JENKINS_SERVER' \
-  -name podman-agent \
+  -name build-agent \
   -webSocket \
   -workDir /home/jenkins/agent
 ```
 
-Replace `FROM_JENKINS_SERVER` with the inbound-agent secret shown by Jenkins. The socket path
-assumes the rootless Podman owner has UID `1000`; adjust the bind-mount source if the host UID
-differs.
+Replace `FROM_JENKINS_SERVER` with the inbound-agent secret shown by Jenkins. 
 
-In Jenkins, wait for `podman-agent` to report as online and confirm that it retains the
+In Jenkins, wait for `build-agent` to report as online and confirm that it retains the
 `build-agent` label. The pipeline selects the label, not the node name.
 
 ### Start the deployment agent
