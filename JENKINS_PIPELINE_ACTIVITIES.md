@@ -21,66 +21,71 @@ Prepare these before starting the Jenkinsfile exercises:
   Kubernetes API servers. The credentials in that file must permit the required deployments.
 - The build agent has access to the rootless Podman socket.
 
+### Configure Jenkins nodes
+
+Create the build and deployment nodes before starting their agent containers:
+
+1. From the Jenkins dashboard, select **Manage Jenkins** -> **Nodes** -> **New Node**.
+2. Enter `build-agent` as the node name, select **Permanent Agent**, and create the node.
+3. Set **Remote root directory** to `/home/jenkins/agent` and **Labels** to `build-agent`.
+4. Set **Usage** to **Only build jobs with label expressions matching this node**.
+5. Set **Launch method** to **Launch agents by connecting it to the controller**, then save.
+6. Repeat the process with node name and label `deploy-agent`. Use the same remote root,
+   usage, and launch method.
+7. Open each node's status page and keep its inbound-agent secret available for the corresponding
+   `podman run` command below. Each node has a different secret.
+
+To obtain the value for `FROM_JENKINS_SERVER`:
+
+1. From the Jenkins dashboard, select **Manage Jenkins** -> **Nodes**.
+2. Select the node that will connect, such as `build-agent` or `deploy-agent`.
+3. Open the node's status page. While the node is offline, Jenkins displays instructions for
+   launching an inbound agent.
+4. Find the generated agent command and copy the token immediately following `-secret`. Use that
+   token in place of `FROM_JENKINS_SERVER` in the matching `podman run` command.
+5. Repeat these steps for the other node. Secrets are node-specific, so do not reuse the build
+   agent's secret for the deployment agent or commit either secret to the repository.
+
 ### Start the build agent
-
-Build the image from the repository root:
-
-```bash
-podman build \
-  --file Containerfile \
-  --tag jenkins_agent_img:latest \
-  .
-```
 
 The image extends the Jenkins inbound agent and includes the .NET 10 SDK, Git, and the Podman
 client. The Podman client uses the host's rootless Podman API socket; it does not run a separate
 container engine inside the agent.
 
-Before running the pipeline, configure a permanent Jenkins node with:
+The build node must have these settings:
 
-- Node name: `podman-agent`
+- Node name: `build-agent`
 - Label: `build-agent`
 - Remote root directory: `/home/jenkins/agent`
 - Launch method: inbound agent
 
-Copy the node's secret from Jenkins, make sure the `jenkins` Podman network and
-`jenkins_agent_img:latest` image already exist, and start the agent as the host user that owns
-the rootless Podman socket:
+Copy the node's secret from Jenkins, make sure the `jenkins` Podman network exists, and start the
+agent as the host user that owns the rootless Podman socket:
 
-Optionally enable and start the rootless Podman API socket if it is not already running:
-
-```bash
-systemctl --user enable --now podman.socket
-```
-
-On a system without user-level systemd services, start the API service manually in a separate
-terminal instead:
-
-```bash
-podman system service --time=0 unix:///run/user/$(id -u)/podman/podman.sock
-```
 Compile the build agent image:
 
 ```bash
-podman build . -f Container.build-agent -t build_agent_img
+podman build -f Container.build-agent -t build-agent-img
 ```
 
 Then start the Jenkins build agent:
 
 ```bash
 podman run -d \
-  --name build-agent \
-  --network jenkins \
-  --replace \
-  --restart=unless-stopped \
-  --security-opt label=disable \
-  --userns=keep-id \
-  build_agent_img:latest \
-  -url http://jenkins:8080 \
-  -secret 'FROM_JENKINS_SERVER' \
-  -name build-agent \
-  -webSocket \
-  -workDir /home/jenkins/agent
+    --name build-agent \
+    --network jenkins \
+    --replace \
+    --restart=unless-stopped \
+    --security-opt label=disable \
+    --userns=keep-id \
+    -v "$XDG_RUNTIME_DIR/podman/podman.sock:/run/podman/podman.sock" \
+    -e CONTAINER_HOST=unix:///run/podman/podman.sock \
+    build-agent-img:latest \
+    -url http://jenkins:8080 \
+    -secret 'FROM_JENKINS_SERVER' \
+    -name build-agent \
+    -webSocket \
+    -workDir /home/jenkins/agent
 ```
 
 Replace `FROM_JENKINS_SERVER` with the inbound-agent secret shown by Jenkins. 
@@ -95,14 +100,14 @@ Build the deployment image from the repository root:
 ```bash
 podman build \
   --file Containerfile.deploy-agent \
-  --tag jenkins_deploy_agent_img:latest \
+  --tag deploy-agent-img:latest \
   .
 ```
 
 The image extends the Jenkins inbound agent and includes Git, `curl`, and `kubectl` v1.36.3
 with its built-in Kustomize support. It intentionally does not include Podman or `kind`.
 
-Configure another permanent Jenkins node with:
+The deployment node must have these settings:
 
 - Node name: `deploy-agent`
 - Label: `deploy-agent`
@@ -113,7 +118,7 @@ Copy this node's secret from Jenkins and start the agent with a read-only kubeco
 
 ```bash
 podman run -d \
-  --name jenkins-deploy-agent \
+  --name deploy-agent \
   --network jenkins \
   --replace \
   --restart=unless-stopped \
@@ -121,7 +126,7 @@ podman run -d \
   --userns=keep-id \
   -v "$HOME/.kube/config:/home/jenkins/kubeconfig:ro" \
   -e KUBECONFIG=/home/jenkins/kubeconfig \
-  jenkins_deploy_agent_img:latest \
+  deploy-agent-img:latest \
   -url http://jenkins:8080 \
   -secret 'FROM_JENKINS_SERVER' \
   -name deploy-agent \
@@ -137,6 +142,11 @@ required by the deployment scripts.
 
 In Jenkins, wait for `deploy-agent` to report as online and confirm that it retains the
 `deploy-agent` label.
+
+If $HOME/.kube/config is missing then create
+```bash 
+mkdir -p $HOME/.kube/config
+```
 
 ### Start the local registry
 
@@ -171,29 +181,6 @@ The build agent does not need `kubectl` or the `kind` CLI. The deployment agent 
 Podman or the `kind` CLI: it uses `kubectl` to modify clusters that already exist and references
 images already published to the registry.
 
-### Configure SCM
-
-Use a Multibranch Pipeline so Jenkins supplies the correct SCM revision to `checkout scm` and can
-later distinguish `main`, feature branches, and pull requests. After creating and pushing the
-initial `Jenkinsfile` from Activity 1:
-
-1. From the Jenkins dashboard, select **New Item**.
-2. Enter a job name, select **Multibranch Pipeline**, and create the job.
-3. Under **Branch Sources**, add a Git or GitHub source.
-4. Set **Repository URL** to the GitHub repository containing this project.
-5. Select Jenkins credentials if the repository is private. No credentials are required for a
-   public repository.
-6. Under **Build Configuration**, select **by Jenkinsfile** and set **Script Path** to
-   `Jenkinsfile`.
-7. Save the job and run **Scan Multibranch Pipeline Now**.
-8. Confirm that Jenkins discovers the expected branch and creates a branch job for it.
-
-The repository URL is job configuration rather than pipeline code. In Activity 2, `checkout scm`
-uses the repository, credentials, branch, and exact revision supplied by the Multibranch Pipeline
-job. Do not replace it with a hard-coded `git` command.
-
----
-
 ## Activity 1: First Pipeline
 
 **Goal:** Understand Jenkins declarative pipeline structure and confirm both agents work.
@@ -211,7 +198,6 @@ pipeline {
             steps {
                 sh '''
                     dotnet --info
-                    podman version
                 '''
             }
         }
@@ -509,6 +495,29 @@ stage('Publish Image') {
 
 ---
 
+### Prepare the development kind cluster
+
+Run these commands on the host, not on a Jenkins agent. Install `kind` with Go and make the
+resulting binary available in the current shell:
+
+```bash
+go install sigs.k8s.io/kind@latest
+export PATH="$(go env GOPATH)/bin:$PATH"
+kind version
+```
+
+Create the development cluster. The name `dev` produces the `kind-dev` context used by the
+deployment script:
+
+```bash
+kind create cluster --name dev
+kubectl cluster-info --context kind-dev
+```
+
+If `kind-dev` already exists, verify it with `kind get clusters` instead of creating it again.
+
+---
+
 ## Activity 6: Deploy Automatically to Development
 
 **Goal:** Introduce continuous deployment to the first environment.
@@ -518,6 +527,68 @@ First create a deployment script with a stable interface:
 ```text
 ./scripts/deploy.sh <context> <overlay> <image>
 ```
+
+Create `scripts/deploy.sh` with the following content:
+
+```bash
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if [ "$#" -ne 3 ]; then
+    echo "Usage: $0 <context> <overlay> <image>" >&2
+    exit 2
+fi
+
+CONTEXT="$1"
+OVERLAY="$2"
+IMAGE="$3"
+NAMESPACE="minimal-api"
+OVERLAY_PATH="k8s/overlays/$OVERLAY"
+MIGRATION_JOB="migration"
+
+if [ ! -d "$OVERLAY_PATH" ]; then
+    echo "Kustomize overlay not found: $OVERLAY_PATH" >&2
+    exit 1
+fi
+
+if ! kubectl config get-contexts "$CONTEXT" >/dev/null 2>&1; then
+    echo "Kubernetes context not found: $CONTEXT" >&2
+    exit 1
+fi
+
+kubectl --context "$CONTEXT" get --raw=/readyz >/dev/null
+kubectl --context "$CONTEXT" apply -k "$OVERLAY_PATH"
+kubectl --context "$CONTEXT" -n "$NAMESPACE" \
+    set image deployment/api api="$IMAGE"
+
+# Recreate the Job so migrations run for every deployment.
+kubectl --context "$CONTEXT" -n "$NAMESPACE" \
+    delete job "$MIGRATION_JOB" --ignore-not-found --wait=true
+kubectl --context "$CONTEXT" -n "$NAMESPACE" \
+    create job "$MIGRATION_JOB" --image="$IMAGE" -- migrate
+
+if ! kubectl --context "$CONTEXT" -n "$NAMESPACE" \
+    wait --for=condition=complete --timeout=180s "job/$MIGRATION_JOB"; then
+    kubectl --context "$CONTEXT" -n "$NAMESPACE" \
+        logs "job/$MIGRATION_JOB" --all-containers=true || true
+    exit 1
+fi
+
+kubectl --context "$CONTEXT" -n "$NAMESPACE" \
+    logs "job/$MIGRATION_JOB" --all-containers=true
+kubectl --context "$CONTEXT" -n "$NAMESPACE" \
+    rollout status deployment/api --timeout=180s
+```
+
+Make the script executable and commit that permission to Git:
+
+```bash
+chmod +x scripts/deploy.sh
+```
+
+This example assumes the application image accepts `migrate` as its migration command. Change the
+arguments after `--image="$IMAGE" --` if the application exposes migrations differently.
 
 Then add the development deployment:
 
